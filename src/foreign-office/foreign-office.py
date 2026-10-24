@@ -7,6 +7,7 @@ import time
 import binascii
 from typing import Optional
 from dataclasses import dataclass
+from press_conference import *
 
 SYNC_BYTE_1        = 0xAA
 SYNC_BYTE_2_PACKET = 0x55
@@ -27,6 +28,9 @@ class Message:
 
     def is_complete(self):
         return self.last_idx is not None and len(self.payloads) == self.last_idx + 1
+
+    def get_output(self):
+        return [{"byte_counter": b, "payload": p} for b, p in self.payloads.items()]
 
     def __str__(self):
         return "".join(self.payloads[o].hex() for o in sorted(self.payloads))
@@ -112,13 +116,15 @@ def parse_80211(frame: bytes, channel: int, rssi: int):
     if frame[32] != 0xAC:
         msg.last_idx = idx
 
-    if msg.is_complete:
+    if msg.is_complete():
         del messages[key]
         done_queue.put(msg)
 
 def message_outputter():
     while True:
-        print(done_queue.get())
+        done = done_queue.get()
+        print(done.payloads)
+        display_message(done.get_output()).show()
 
 def main():
     threads = []
