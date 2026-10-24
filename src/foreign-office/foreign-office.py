@@ -14,17 +14,6 @@ SYNC_BYTE_2_STATS = 0x66
 SYNC_SEQ_PACKET = bytes([SYNC_BYTE_1, SYNC_BYTE_2_PACKET])
 SYNC_SEQ_STATS = bytes([SYNC_BYTE_1, SYNC_BYTE_2_STATS])
 
-TYPE_NAMES = {0: "Management", 1: "Control", 2: "Data", 3: "Extension"}
-SUBTYPE_NAMES = {
-    (0, 0): "Assoc Request", (0, 1): "Assoc Response",
-    (0, 4): "Probe Request", (0, 5): "Probe Response",
-    (0, 8): "Beacon", (0, 10): "Disassociation",
-    (0, 11): "Authentication", (0, 12): "Deauthentication",
-    (1, 11): "RTS", (1, 12): "CTS", (1, 13): "ACK",
-    (2, 0): "Data", (2, 4): "Null (no data)",
-    (2, 8): "QoS Data", (2, 12): "QoS Null",
-}
-
 @dataclass
 class Client:
     mac: str
@@ -33,21 +22,18 @@ class Client:
 class Message:
     source: Client
     destination: Client
-    frame_len: int
-    # header_len: int
-    # data_len: int
-    # full_frame: bytearray
-    # data: bytearray
-    # counter: 
-    # end: bytearray
+    payloads: dict[int, bytes]
+    last_idx: Optional[int] = None
+
+    def is_complete(self):
+        return self.last_idx is not None and len(self.payloads) == self.last_idx + 1
 
     def __str__(self):
-        #return f"{binascii.hexlify(self.full_frame)}\nMessage: FROM {self.source.mac} TO {self.destination.mac} WITH HEADER LENGTH {self.header_len} AND DATA LENGTH {self.data_len}\n{binascii.hexlify(self.data)}\n\n"
-        #return f"{self.counter}"
-        return ""
+        return "".join(self.payloads[o].hex() for o in sorted(self.payloads))
 
 raw_byte_queue = queue.Queue()
-message_queue = queue.Queue()
+messages: dict[tuple, Message] = {}
+done_queue = queue.Queue()
 
 def raw_serial_reader(port: str, baud: int):
     try:
@@ -101,102 +87,45 @@ def frame_parser():
                 rssi = struct.unpack("b", payload[1:2])[0]
                 frame_80211 = payload[2:]
 
-                parsed = parse_80211(frame_80211, channel, rssi)
-                if parsed is None:
-                    continue
-                message_queue.put_nowait(parsed)
-                # if parsed.data_len != 114:
-                #     continue
-                print(parsed)
+                parse_80211(frame_80211, channel, rssi)
 
 def parse_80211(frame: bytes, channel: int, rssi: int):
-    if len(frame) < 24:
-        return None
+    if len(frame) < 46:
+        return
 
-    fc0 = frame[0]
-    version = fc0 & 0x03
-    ftype = (fc0 >> 2) & 0x03
-    subtype = (fc0 >> 4) & 0x0F
+    dest = frame[4:10].hex(":")
+    src = frame[10:16].hex(":")
+    if dest != "03:09:bf:00:00:00":
+        return
+    
+    offset = int.from_bytes(frame[38:42], 'little')
+    counter = int.from_bytes(frame[-4:-2], 'little')
+    idx = offset // 160
+    key = (src, (counter - idx) & 0xFFFF)
+    payload = bytes(frame[42:-4])
 
-    addr1 = frame[4:10].hex(":")
-    addr2 = frame[10:16].hex(":") if len(frame) >= 16 else None
-    addr3 = frame[16:22].hex(":") if len(frame) >= 22 else None
+    msg = messages.get(key)
+    if msg is None:
+        msg = messages[key] = Message(Client(src), Client(dest), {})
 
-    ssid = None
-    if ftype == 0 and subtype == 8 and len(frame) > 36: # Beacon frame
-        ssid = parse_ssid_from_tags(frame, 36)
-    elif ftype == 0 and subtype == 5 and len(frame) > 36: # Probe response
-        ssid = parse_ssid_from_tags(frame, 36)
-    elif ftype == 0 and subtype == 4 and len(frame) > 24: # Probe request
-        ssid = parse_ssid_from_tags(frame, 24)
+    msg.payloads[offset] = payload
+    if frame[32] != 0xAC:
+        msg.last_idx = idx
 
-    ftype_name = TYPE_NAMES.get(ftype, f"type{ftype}")
-    subtype_name = SUBTYPE_NAMES.get((ftype, subtype), f"subtype{subtype}")
+    if msg.is_complete:
+        del messages[key]
+        done_queue.put(msg)
 
-    header_len = header_length(frame)
-    frame_len = len(frame)
-
-    print(binascii.hexlify(frame), "-", frame_len)
-
-    message = Message(
-        source=Client(addr2),
-        destination=Client(addr1),
-        frame_len=frame_len
-    )
-
-    # 
-    # end = frame[-4:] if len(frame) > 4 else None
-    # message = Message(Client(addr2), Client(addr1), header_len, data_len, frame, frame[header_len:], end)
-
-    return message
-
-def header_length(frame: bytes):
-    fc0, fc1 = frame[0], frame[1]
-    ftype = (fc0 >> 2) & 0x03
-    subtype = (fc0 >> 4) & 0x0F
-    to_ds = fc1 & 0x01
-    from_ds = (fc1 >> 1) & 0x01
-    order = fc1 & 0x80
-
-    if ftype == 1:  # Control
-        return {11: 16, 12: 10, 13: 10}.get(subtype, 16)  # RTS 16, CTS/ACK 10
-
-    hdr = 24
-    if ftype == 2 and to_ds and from_ds:
-        hdr += 6
-    if ftype == 2 and (subtype & 0x08):  # QoS
-        hdr += 2
-        if order:
-            hdr += 4
-    elif ftype == 0 and order:
-        hdr += 4
-    return hdr
-
-def parse_ssid_from_tags(frame: bytes, tag_start: int) -> Optional[str]:
-    offset = tag_start
-    while offset + 2 <= len(frame):
-        tag_num  = frame[offset]
-        tag_len = frame[offset + 1]
-        value_start = offset + 2
-        value_end = value_start + tag_len
-        if value_end > len(frame):
-            break
-        if tag_num == 0: # Found SSID
-            raw = frame[value_start:value_end]
-            if tag_len == 0:
-                return "<hidden/broadcast>"
-            try:
-                return raw.decode("utf-8", errors="replace")
-            except Exception:
-                return raw.hex()
-        offset = value_end
-    return None
+def message_outputter():
+    while True:
+        print(done_queue.get())
 
 def main():
     threads = []
     for target, kwargs in [
-        (raw_serial_reader, {"port": "/dev/ttyUSB0", "baud": 921600}),
+        (raw_serial_reader, {"port": "/dev/ttyACM0", "baud": 921600}),
         (frame_parser,      {}),
+        (message_outputter, {}),
     ]:
         t = threading.Thread(target=target, kwargs=kwargs, daemon=True)
         t.start()
