@@ -33,14 +33,18 @@ class Client:
 class Message:
     source: Client
     destination: Client
-    header_len: int
-    data_len: int
-    full_frame: bytearray
-    data: bytearray
+    frame_len: int
+    # header_len: int
+    # data_len: int
+    # full_frame: bytearray
+    # data: bytearray
+    # counter: 
+    # end: bytearray
 
     def __str__(self):
-        return f"{binascii.hexlify(self.full_frame)}\nMessage: FROM {self.source.mac} TO {self.destination.mac} WITH HEADER LENGTH {self.header_len} AND DATA LENGTH {self.data_len}\n{binascii.hexlify(self.data)}\n\n"
-    
+        #return f"{binascii.hexlify(self.full_frame)}\nMessage: FROM {self.source.mac} TO {self.destination.mac} WITH HEADER LENGTH {self.header_len} AND DATA LENGTH {self.data_len}\n{binascii.hexlify(self.data)}\n\n"
+        #return f"{self.counter}"
+        return ""
 
 raw_byte_queue = queue.Queue()
 message_queue = queue.Queue()
@@ -101,6 +105,8 @@ def frame_parser():
                 if parsed is None:
                     continue
                 message_queue.put_nowait(parsed)
+                # if parsed.data_len != 114:
+                #     continue
                 print(parsed)
 
 def parse_80211(frame: bytes, channel: int, rssi: int):
@@ -128,8 +134,19 @@ def parse_80211(frame: bytes, channel: int, rssi: int):
     subtype_name = SUBTYPE_NAMES.get((ftype, subtype), f"subtype{subtype}")
 
     header_len = header_length(frame)
-    data_len = len(frame) - header_len
-    message = Message(Client(addr2), Client(addr1), header_len, data_len, frame, frame[header_len:])
+    frame_len = len(frame)
+
+    print(binascii.hexlify(frame), "-", frame_len)
+
+    message = Message(
+        source=Client(addr2),
+        destination=Client(addr1),
+        frame_len=frame_len
+    )
+
+    # 
+    # end = frame[-4:] if len(frame) > 4 else None
+    # message = Message(Client(addr2), Client(addr1), header_len, data_len, frame, frame[header_len:], end)
 
     return message
 
