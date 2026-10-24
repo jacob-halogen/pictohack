@@ -84,6 +84,7 @@ void IRAM_ATTR snifferCallback(void *buf, wifi_promiscuous_pkt_type_t type) {
   if (memcmp(pkt->payload + SRCADDR_OFFSET, PINK_DS_MAC, 6) == 0) valid_mac = 1;
   if (memcmp(pkt->payload + SRCADDR_OFFSET, WHITE_DS_MAC, 6) == 0) valid_mac = 1;
   if (!valid_mac) return;
+  if (len < 200) return;
 
   // static: keeps the struct off the small Wi-Fi task stack
   static queued_packet_t qp;
@@ -168,7 +169,7 @@ void loop() {
     uint8_t statsFrame[20];
     statsFrame[0] = 0xAA;
     statsFrame[1] = 0x66;  // 2nd sync byte distinguishes stats from packet frames
-    statsFrame[2] = 16;    // payload length: 16 bytes (4x uint32, little-endian)
+    statsFrame[2] = 16;    // payload length: 16 bytes (4x  04	81	09	[Last packet]	[Best packet]	00	00	00uint32, little-endian)
     statsFrame[3] = 0;
     memcpy(&statsFrame[4], &total, 4);
     memcpy(&statsFrame[8], &dropped, 4);
