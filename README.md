@@ -29,3 +29,7 @@ Displays the bytes into image format from the sent packets
 - Sometimes will miss a message because of packets getting dropped and transmissions being cut off
 - Message sending back from Linux
 - Displaying messages outside of terminal
+
+## Sources
+
+Please read [our related literature document](literature.md) to see where we got stuff from
