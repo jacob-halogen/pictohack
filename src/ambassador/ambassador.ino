@@ -84,7 +84,7 @@ void IRAM_ATTR snifferCallback(void *buf, wifi_promiscuous_pkt_type_t type) {
   if (memcmp(pkt->payload + SRCADDR_OFFSET, PINK_DS_MAC, 6) == 0) valid_mac = 1;
   if (memcmp(pkt->payload + SRCADDR_OFFSET, WHITE_DS_MAC, 6) == 0) valid_mac = 1;
   if (!valid_mac) return;
-  if (len < 200) return;
+  // if (len < 200) return;
 
   // static: keeps the struct off the small Wi-Fi task stack
   static queued_packet_t qp;

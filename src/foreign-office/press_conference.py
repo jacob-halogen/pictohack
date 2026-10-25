@@ -1,93 +1,130 @@
-from PIL import Image
-
-PICTOCHAT_NORMAL_PAYLOAD = 160
-
-sample_payload = bytes([0x0F, 0xF0] * (160 // 2))  # alternating nibble pattern, 160 bytes total
-
-packets = [
-    {'byte_counter': i, 'payload': sample_payload}
-    for i in range(25)  # 25 unique -> blocks = 2, non-empty image
+PRINT_CHAR = "█"
+PALLET = [
+    "\033[38;5;15m", #0 WHITE (BLANK)
+    "\033[38;5;0m", #1 BLACK
+    "" #2 N/A - SHOULDN'T HAPPEN
+    "\033[38;5;213m", #3 LIGHT PINK
+    "\033[38;5;201m", #4 BRIGHT PINK
+    "\033[38;5;9m", #5 RED
+    "\033[38;5;196m", #6 ORANGEY-RED
+    "\033[38;5;202m", #7 ORANGE
+    "\033[38;5;11m", #8 YELLOW
+    "\033[38;5;10m", #9 LIGHT GREEN
+    "\033[38;5;34m", #A GREEN
+    "\033[38;5;14m", #B TURQUOISE
+    "\033[38;5;45m", #C LIGHT BLUE
+    "\033[38;5;39m", #D PALE BLUE
+    "\033[38;5;21m", #E SLIGHTLY NOT ROYAL BLUE
+    "\033[38;5;12m", #F FULL BLUE
 ]
 
-def decode_chunk(im, raw, at, chunkx, chunky, w):
+TILE_WIDTH = 8
+TILE_HEIGHT = 8
+
+def decode_tiled_pixel(
+    bitmap: bytes,
+    x: int,
+    y: int,
+    backing_width: int,
+) -> int:
     """
-    Decodes one 8x8 tile of nibble-packed pixel data into the RGB buffer `im`.
-    Mirrors the original C pointer arithmetic: each byte in `raw` holds two
-    pixels (low nibble, high nibble); any nonzero nibble is painted black.
-    Returns the updated `at` offset into `raw`.
+    Decode one pixel from row-major 8x8 tiled 4bpp storage.
+
+    Tile order:
+
+        tile row 0: tile 0, tile 1, tile 2, ...
+        tile row 1: tile N, tile N+1, ...
+
+    Within each tile row, the low nibble is the left pixel and the high
+    nibble is the right pixel.
     """
-    for i in range(8 * 8 // 2):
-        if chunkx * 8 + (i % 4) * 2 < w:
-            idx = chunkx * 8 + (i % 4) * 2 + w * ((i // 4) + chunky * 8)
+    if x < 0 or y < 0 or x >= backing_width:
+        return 0
 
-            if (raw[at] & 0xf) != 0:
-                im[3 * idx + 0] = 0x00
-                im[3 * idx + 1] = 0x00
-                im[3 * idx + 2] = 0x00
+    tiles_across = backing_width // TILE_WIDTH
+    tile_x = x // TILE_WIDTH
+    tile_y = y // TILE_HEIGHT
 
-            if (raw[at] >> 4) != 0:
-                idx2 = idx + 1
-                im[3 * idx2 + 0] = 0x00
-                im[3 * idx2 + 1] = 0x00
-                im[3 * idx2 + 2] = 0x00
-        at += 1
-    return at
+    within_tile_x = x % TILE_WIDTH
+    within_tile_y = y % TILE_HEIGHT
 
+    tile_index = tile_y * tiles_across + tile_x
+    tile_bytes = TILE_WIDTH * TILE_HEIGHT // 2
 
-def display_message(packets):
+    tile_offset = tile_index * tile_bytes
+    row_offset = within_tile_y * (TILE_WIDTH // 2)
+    byte_offset = tile_offset + row_offset + within_tile_x // 2
+
+    if byte_offset >= len(bitmap):
+        return 0
+
+    value = bitmap[byte_offset]
+
+    # Protocol notes: low nibble is left pixel, high nibble is right pixel.
+    if within_tile_x % 2 == 0:
+        return value & 0x0F
+
+    return value >> 4
+
+def print_canvas(
+    bitmap: bytes,
+    backing_width: int,
+    visible_width: int,
+    height: int,
+    x_offset: int,
+) -> None:
     """
-    packets: list of dicts, each with:
-        'byte_counter': int
-        'payload':      bytes/bytearray of length PICTOCHAT_NORMAL_PAYLOAD (160)
-    (i.e. one entry per captured pictochat_packet, in the order received)
+    Print a compact ASCII rendering.
 
-    Returns a PIL Image on success, or None if there wasn't enough data
-    to form a complete message (mirrors the original function returning 0).
+    Two source rows are combined into one terminal row because terminal
+    characters are taller than they are wide.
     """
-    packet_count = len(packets)
-    if packet_count == 0:
-        print("ARGAGAG NO PACKETS")
-        return None
+    if backing_width % 8 != 0:
+        raise ValueError("backing width must be divisible by 8")
 
-    # Count unique packets, deduping consecutive retransmissions by byte_counter
-    j = 1
-    print(packet_count)
-    for i in range(1, packet_count):
-        if packets[i]['byte_counter'] != packets[i - 1]['byte_counter']:
-            j += 1
+    if x_offset < 0:
+        raise ValueError("x_offset cannot be negative")
 
-    blocks = (j - 1) // 12
-    width = 220
-    height = blocks * 16
-    if blocks <= 0:
-        print("ARGGHSGAHA NO BLOCKA")
-        return None
+    if x_offset + visible_width > backing_width:
+        raise ValueError(
+            f"x_offset + visible_width exceeds backing width: "
+            f"{x_offset} + {visible_width} > {backing_width}"
+        )
 
-    im = bytearray(b'\xff' * (width * height * 3))
+    print("    Canvas preview:")
 
-    # Original C code allocates (j+1)*PAYLOAD bytes but then memsets a
-    # further PAYLOAD bytes past that (an off-by-one in the source) -
-    # allocate one extra chunk here so the trailing memset stays in bounds.
-    raw = bytearray((j + 2) * PICTOCHAT_NORMAL_PAYLOAD)
+    for y in range(0, height, 2):
+        line = "    |"
 
-    j = 0
-    raw[0:PICTOCHAT_NORMAL_PAYLOAD] = packets[0]['payload']
-    for i in range(1, packet_count):
-        if packets[i]['byte_counter'] != packets[i - 1]['byte_counter']:
-            j += 1
-            start = j * PICTOCHAT_NORMAL_PAYLOAD
-            raw[start:start + PICTOCHAT_NORMAL_PAYLOAD] = packets[i]['payload']
+        for output_x in range(visible_width):
+            source_x = x_offset + output_x
 
-    # Trailing block already zeroed since bytearray() initializes to 0,
-    # matching the original's memset(raw+(j+1)*PAYLOAD, 0, PAYLOAD)
+            first = decode_tiled_pixel(
+                bitmap,
+                source_x,
+                y,
+                backing_width,
+            )
 
-    k = 166
-    for j in range(blocks * 2):
-        for i in range(224 // 8):
-            k = decode_chunk(im, raw, k, i, j, width)
-        k += 4 * 8 * 4
+            if y + 1 < height:
+                second = decode_tiled_pixel(
+                    bitmap,
+                    source_x,
+                    y + 1,
+                    backing_width,
+                )
+                value = max(first, second)
+            else:
+                value = first
 
-    return Image.frombytes('RGB', (width, height), bytes(im))
+            line += PALLET[min(value, len(PALLET) - 1)]
+            line += PRINT_CHAR
 
-# print(packets)
-# display_message(packets).show()
+            # line += ASCII_PALETTE[min(value, len(ASCII_PALETTE) - 1)]
+
+        line += "|"
+
+        if line.strip("|").strip():
+            print(line)
+
+    print("\033[0m")
