@@ -321,12 +321,6 @@ def handle_host_frame(
 
     if len(application) < 4:
         return
-    
-    # type_id = read_u16_le(application, 0)
-
-    # # Idle roster records are intentionally noisy.
-    # if type_id == 5:
-    #     return
 
     decode_picto(application, source)
 
